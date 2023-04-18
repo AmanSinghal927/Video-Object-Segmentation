@@ -5,6 +5,7 @@ import torch
 import torch.utils.data as data
 from PIL import Image
 from torchvision import transforms
+import matplotlib.pyplot as plt
 
 class VideoFramesDataset(data.Dataset):
     def __init__(self, root, mode, transform=None):
@@ -58,7 +59,12 @@ class VideoFramesDataset(data.Dataset):
     def __len__(self):
         return len(self.video_names)
     
-
+def show_img_and_mask(img, mask):
+    fig, ax = plt.subplots(1, 2)
+    ax[0].imshow(img)
+    ax[1].imshow(mask)
+    plt.show()
+    
 if __name__ == '__main__':
     # test dataset
     transform = transforms.Compose([
@@ -74,16 +80,6 @@ if __name__ == '__main__':
 
     print (video_frames[0].shape)
     print(video_mask[0].shape)
-
-    # visualize video frames
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    def show_img_and_mask(img, mask):
-        fig, ax = plt.subplots(1, 2)
-        ax[0].imshow(img)
-        ax[1].imshow(mask)
-        plt.show()
 
     for i in range(0, 21):
         img = video_frames[i].numpy().transpose(1, 2, 0)
