@@ -25,7 +25,7 @@ class PatchEmbedding(nn.Module):
 
 # input size (b, c, h, w) and output size (b, h, w), where b is the batch size, c is the number of channels, h is the height, and w is the width.
 class JEPA(nn.Module):
-    def __init__(self, img_size, patch_size, in_channels, embed_dim, encoder_x, predictor):
+    def __init__(self, img_size, patch_size, in_channels, embed_dim, encoder, predictor):
         super(JEPA, self).__init__()
 
         self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, embed_dim)
@@ -33,7 +33,7 @@ class JEPA(nn.Module):
         self.num_tokens = self.patch_embed.num_tokens
         self.pos_embed = nn.Parameter(torch.randn(1, self.num_tokens, embed_dim))
 
-        self.encoder_x = encoder_x
+        self.encoder = encoder
         self.predictor = predictor
 
         self.embed_norm = nn.LayerNorm(embed_dim)
@@ -49,7 +49,7 @@ class JEPA(nn.Module):
         # x0: (b, c, h, w)
         x0 = frames_embed[0]
         # sx_0: (b, num_patches, embed_dim)
-        sx_0 = self.encoder_x(x0)
+        sx_0 = self.encoder(x0)
         sx[0] = sx_0
 
         # encode frames i to H
@@ -57,7 +57,7 @@ class JEPA(nn.Module):
             # xj: (b, c, h, w)
             xj = frames_embed[j]
             # sx_j: (b, num_patches, embed_dim)
-            sx_j = self.encoder_x(self.patch_embed(xj) + self.pos_embed)
+            sx_j = self.encoder(self.patch_embed(xj) + self.pos_embed)
             sx[j] = sx_j
 
         # predict sx_i from sx_0

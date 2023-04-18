@@ -7,6 +7,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from dataset import VideoFramesDataset
+from model import JEPA
+from torchvision import transforms
 
 
 def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args):
@@ -117,17 +119,16 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+    # Transformations
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+    ])
+
+    print(args.batch_size)
+
     # Load data
     train_loader = DataLoader(
-        dataset=VideoFramesDataset(args.data_dir, 'train'),
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True,
-    )
-
-    unlabel_loader = DataLoader(
-        dataset=VideoFramesDataset(args.data_dir, 'unlabel'),
+        dataset=VideoFramesDataset(args.data_dir, 'train', transform=transform),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
@@ -135,21 +136,32 @@ if __name__ == "__main__":
     )
 
     val_loader = DataLoader(
-        dataset=VideoFramesDataset(args.data_dir, 'val'),
+        dataset=VideoFramesDataset(args.data_dir, 'val', transform=transform),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
     )
 
+    if args.unsupervised:
+        unlabel_loader = DataLoader(
+            dataset=VideoFramesDataset(args.data_dir, 'unlabel', transform=transform),
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=True,
+        )
+
     if args.debug_dataloader:
         for batch_idx, data in enumerate(train_loader):
-            print(data.shape)
+            frames, mask = data
+            print(frames.shape)
+            print(mask.shape)
             break
-    exit()
 
     # Load model
-    model = ...  # TODO: load model
+    model = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
+                 embed_dim=512, encoder_x=None, predictor=None)
 
     # Load optimizer
     optimizer = ...  # TODO: choose optimizer
