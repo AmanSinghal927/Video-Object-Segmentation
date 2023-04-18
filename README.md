@@ -1,4 +1,4 @@
-# Object Segmentation based on Deep Learning
+# Object Segmentation from Unlabeled Video Frames based on Deep Learning Methods
 
 ## Contents
 -   [Collaborators](#collaborators)
