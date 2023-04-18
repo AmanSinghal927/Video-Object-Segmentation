@@ -1,10 +1,12 @@
 import os
 import argparse
+import datetime
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from dataset import VideoFramesDataset
 
 
 def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args):
@@ -60,6 +62,34 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args
                     os.makedirs(args.save_dir)
                 torch.save(model.state_dict(), os.path.join(
                     args.save_dir, 'model.pth'))
+                
+        print('Best accuracy: {:.0f}%'.format(100. * best_acc))
+
+def unsupervised_train(model, unlabel_loader, optimizer, criterion, args):
+    model.train()
+    for epoch in range(args.epochs):
+        for batch_idx, data in enumerate(unlabel_loader):
+            data = data.to(args.device)
+            optimizer.zero_grad()
+
+            # TODO: figure out how to do unsupervised training
+            # What is input?
+            #   - a batch is a list of videos (each video is a list of frame images)
+            #   - each video is a list of frame images
+            #   - each frame image is a tensor of shape (3, 160, 240)
+            #   - each batch is a tensor of shape (batch_size, num_frames?, 3, 160, 240)
+            # What is target?
+
+            output = model(data)
+            loss = criterion(output, output)
+            loss.backward()
+            optimizer.step()
+            if batch_idx % args.log_interval == 0:
+                print('Unsupervised Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                    epoch, batch_idx * len(data), len(unlabel_loader.dataset),
+                    100. * batch_idx / len(unlabel_loader), loss.item()))
+                
+            
 
 
 if __name__ == "__main__":
@@ -77,6 +107,8 @@ if __name__ == "__main__":
     parser.add_argument('--pretrained', action='store_true', default=False)
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument('--unsupervised', action='store_true', default=False)
+    parser.add_argument('--debug_dataloader', action='store_true', default=False)
     args = parser.parse_args()
 
     # Set random seed
@@ -87,7 +119,15 @@ if __name__ == "__main__":
 
     # Load data
     train_loader = DataLoader(
-        dataset=...,  # TODO: load train dataset
+        dataset=VideoFramesDataset(args.data_dir, 'train'),
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True,
+    )
+
+    unlabel_loader = DataLoader(
+        dataset=VideoFramesDataset(args.data_dir, 'unlabel'),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
@@ -95,12 +135,18 @@ if __name__ == "__main__":
     )
 
     val_loader = DataLoader(
-        dataset=...,  # TODO: load validation dataset
+        dataset=VideoFramesDataset(args.data_dir, 'val'),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
     )
+
+    if args.debug_dataloader:
+        for batch_idx, data in enumerate(train_loader):
+            print(data.shape)
+            break
+    exit()
 
     # Load model
     model = ...  # TODO: load model
@@ -124,12 +170,15 @@ if __name__ == "__main__":
         best_acc = checkpoint['best_acc']
 
     # Train model
-    train(model, train_loader, val_loader,
-          optimizer, scheduler, criterion, args)
+    if args.unsupervised:
+        unsupervised_train(model, unlabel_loader, optimizer, criterion, args)
+    else:
+        train(model, train_loader, val_loader,
+            optimizer, scheduler, criterion, args)
 
     # Save model
     if args.save_model:
         if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir)
         torch.save(model.state_dict(), os.path.join(
-            args.save_dir, 'model.pth'))
+            args.save_dir, f'model_{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.pth'))
