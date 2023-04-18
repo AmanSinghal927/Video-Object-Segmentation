@@ -2,9 +2,30 @@ import torch
 import torch.nn as nn
 import copy
 
+class PatchEmbedding(nn.Module):
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=64):
+        super().__init__()
+        if isinstance(img_size, int):
+            img_size = img_size, img_size
+        if isinstance(patch_size, int):
+            patch_size = patch_size, patch_size
+        #calculate the number of patches
+        self.patch_shape = (img_size[0] // patch_size[0], img_size[1] // patch_size[1])
+
+        #convolutional layer to convert the image into patches
+        self.conv = nn.Conv2d(
+            in_chans, embed_dim, kernel_size=patch_size, stride=patch_size
+        )
+        
+    def forward(self, x):
+        x = self.conv(x)
+        #flatten the patches
+        x = x.flatten(2).transpose(1, 2)
+        return x
+
 # input size (b, c, h, w) and output size (b, h, w), where b is the batch size, c is the number of channels, h is the height, and w is the width.
 class JEPA(nn.Module):
-    def __init__(self, img_size, patch_size, in_channels, embed_dim, num_heads, encoder_x, predictor):
+    def __init__(self, img_size, patch_size, in_channels, embed_dim, encoder_x, predictor):
         super(JEPA, self).__init__()
 
         self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, embed_dim)
