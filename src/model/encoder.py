@@ -1,59 +1,65 @@
 import torch
 import torch.nn as nn
-from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
 
-class PatchEmbedding(nn.Module):
-    def __init__(self, in_channels, patch_size, embedding_dim):
-        super().__init__()
-        self.proj = nn.Conv2d(in_channels, embedding_dim, kernel_size=patch_size, stride=patch_size)
+class Encoder3DCNN(nn.Module):
+    def __init__(self, in_channels, hidden_dim, num_layers):
+        super(Encoder3DCNN, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Conv3d(in_channels, hidden_dim, kernel_size=(3, 3, 3), padding=1),
+            nn.ReLU(),
+            nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2))
+        )
+        for _ in range(num_layers - 1):
+            self.layers.add_module("conv3d", nn.Conv3d(hidden_dim, hidden_dim, kernel_size=(3, 3, 3), padding=1))
+            self.layers.add_module("relu", nn.ReLU())
+            self.layers.add_module("maxpool3d", nn.MaxPool3d(kernel_size=(1, 2, 2), stride=(1, 2, 2)))
+
+        self.avgpool = nn.AdaptiveAvgPool3d(1)
 
     def forward(self, x):
-        x = self.proj(x)
-        x = x.flatten(2).transpose(1, 2)
+        x = self.layers(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
         return x
-    
 
-class ViTEncoder(nn.Module):
-    def __init__(self, in_channels, patch_size, embedding_dim, num_layers, num_heads, mlp_dim, dropout=0.1):
+
+class EncoderViT(nn.Module):
+    def __init__(self, img_size, patch_size, num_frames, channels, num_classes, dim, depth, heads, mlp_dim):
         super().__init__()
-        self.embedding = PatchEmbedding(in_channels, patch_size, embedding_dim)
-        self.pos_embedding = nn.Parameter(torch.zeros(1, (64 // patch_size) * (64 // patch_size), embedding_dim))
-        self.dropout = nn.Dropout(dropout)
+        self.num_patches = (img_size // patch_size) * (img_size // patch_size)
+        self.patch_size = patch_size
+        self.dim = dim
+        self.num_frames = num_frames
+
+        self.patch_to_embedding = nn.Linear(patch_size * patch_size * channels, dim)
+
+        self.pos_embedding = nn.Parameter(torch.randn(1, num_frames * self.num_patches + 1, dim))
+        self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
         
-        encoder_layer = TransformerEncoderLayer(embedding_dim, num_heads, mlp_dim, dropout)
-        self.transformer = TransformerEncoder(encoder_layer, num_layers)
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.TransformerEncoderLayer(d_model=dim, nhead=heads, dim_feedforward=mlp_dim))
+        
 
     def forward(self, x):
-        x = self.embedding(x)
-        x += self.pos_embedding
-        x = self.dropout(x)
-        x = self.transformer(x)
-        return x
+        batch_size = x.shape[0]
+        x = x.view(batch_size, self.num_frames, -1, self.patch_size, self.patch_size)
+        x = x.permute(0, 1, 3, 4, 2).contiguous()
+        x = x.view(batch_size, self.num_frames, self.patch_size * self.patch_size, -1)
 
+        x = self.patch_to_embedding(x)
+        x = x.permute(1, 0, 2, 3).contiguous()
+        x = x.view(self.num_frames, batch_size * self.num_patches, self.dim)
 
-class CNNEncoder(nn.Module):
-    def __init__(self, in_channels, num_features):
-        super().__init__()
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-        self.fc_layers = nn.Sequential(
-            nn.Linear(256 * 8 * 8, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, num_features),
-        )
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
 
-    def forward(self, x):
-        x = self.conv_layers(x)
-        x = x.view(x.size(0), -1)
-        x = self.fc_layers(x)
+        x = x + self.pos_embedding
+        x = x.permute(1, 0, 2)
+
+        for layer in self.layers:
+            x = layer(x)
+
+        x = x[:, 0]
         return x
