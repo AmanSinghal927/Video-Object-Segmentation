@@ -64,7 +64,7 @@ def dataset_test():
     print("====================")
 
     unlabeled_dataset = FrameDataset(root_dir=unlabeled, labeled=False, transform=transform)
-    print("Train dataset has {} length".format(len(train_dataset)))
+    print("Unlabeled dataset has {} length".format(len(unlabeled_dataset)))
     print("")
     video_frames, video_mask = unlabeled_dataset[0]
     print('video_frames for unlabeled size: {}'.format(video_frames.size()))
