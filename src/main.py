@@ -100,7 +100,7 @@ def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, a
         if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir)
         torch.save(model.state_dict(), os.path.join(
-            args.save_dir, f'pretrain_model_{datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}.pth'))
+            args.save_dir, f'pretrain_model_skips{args.frame_skips}_{datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}.pth'))
                       
 
 if __name__ == "__main__":
@@ -112,12 +112,14 @@ if __name__ == "__main__":
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--log_interval', type=int, default=100)
     parser.add_argument('--save_model', action='store_true', default=False)
+    parser.add_argument('--load_model', type=str, default=None)
     parser.add_argument('--save_dir', type=str, default='model')
     parser.add_argument('--data_dir', type=str, default='data')
     parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--pretrained', action='store_true', default=False)
     parser.add_argument('--resume', type=str, default=None)
     parser.add_argument('--unsupervised', action='store_true', default=False)
+    parser.add_argument('--frame_skip', type=int, default=0)
     parser.add_argument('--debug_dataloader', action='store_true', default=False)
     args = parser.parse_args()
 
@@ -212,7 +214,12 @@ if __name__ == "__main__":
 
     # Load model
     model = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
-                 embed_dim=512, encoder_x=encoder_x, encoder_y=encoder_y, predictor=predictor).to(args.device)
+                 embed_dim=512, 
+                 encoder_x=encoder_x, 
+                 encoder_y=encoder_y, 
+                 predictor=predictor, 
+                 skip=args.frame_skip
+                 ).to(args.device)
 
     # Load optimizer
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
@@ -222,6 +229,10 @@ if __name__ == "__main__":
 
     # Load loss function
     criterion = nn.MSELoss()
+
+    # Load pretrained model
+    if args.load_model is not None:
+        model.load_state_dict(torch.load(args.load_model))
 
     # Load checkpoint
     if args.resume is not None:

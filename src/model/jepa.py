@@ -38,8 +38,8 @@ class JEPA(nn.Module):
 
     # frames: (b, num_frames=22, c, h, w)
     def forward(self, frames):
-        print("In JEPA forward")
-        print(frames.shape)
+        # print("In JEPA forward")
+        # print(frames.shape)
 
         # TODO: decide architecture for JEPA
         #  1. current architecture: 11 frames together (b, embed_dim) (ViViT) encoded predicting 1 frame (ViViT (could be ViT))
@@ -53,14 +53,14 @@ class JEPA(nn.Module):
         y = frames[:, 11 + self.skip, :, :, :].unsqueeze(1)
         # check to see if 11th frame (x) and 12th + skip frame (y) are the different frames
         assert not torch.equal(x[:, 10, :, :, :], y[:, 0, :, :, :])
-        print("x: ", x.shape)
-        print("y: ", y.shape)
+        # print("x: ", x.shape)
+        # print("y: ", y.shape)
 
         # rearrange for encoder (b, num_frames=22, c, h, w) to (b, c, num_frames=22, h, w)
         x = x.permute(0, 2, 1, 3, 4)
         y = y.permute(0, 2, 1, 3, 4)
-        print("x: ", x.shape)
-        print("y: ", y.shape)
+        # print("x: ", x.shape)
+        # print("y: ", y.shape)
 
         # encode x and y
         # TODO: decide on strategy for encoding x and y
@@ -71,8 +71,8 @@ class JEPA(nn.Module):
         # y_embed: (b, embed_dim)
         x_embed = self.encoder_x(x)
         y_embed = self.encoder_y(y)
-        print("x_embed: ", x_embed.shape)
-        print("y_embed: ", y_embed.shape)
+        # print("x_embed: ", x_embed.shape)
+        # print("y_embed: ", y_embed.shape)
         
         # predictor
         # from first 11 frames, predict the frame that is self.skip frames away
@@ -80,7 +80,7 @@ class JEPA(nn.Module):
         # predict the frame that is self.skip frames away
         # pred_y: (b, num_tokens, embed_dim)
         pred_y = self.predictor(x_embed)
-        print('After Predictor: ', pred_y.shape)
+        # print('After Predictor: ', pred_y.shape)
 
         # calculate the residual
         # residual: (b, num_tokens, embed_dim)
