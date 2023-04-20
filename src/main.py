@@ -89,11 +89,11 @@ def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, a
             loss = criterion(x, target)
             loss.backward()
             optimizer.step()
-            scheduler.step()
             if batch_idx % args.log_interval == 0:
                 print('Unsupervised Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                     epoch, batch_idx * len(data), len(unlabel_loader.dataset),
                     100. * batch_idx / len(unlabel_loader), loss.item()))  
+        scheduler.step()
                 
     # save model
     if args.save_model:
