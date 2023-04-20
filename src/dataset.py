@@ -5,7 +5,9 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
 import matplotlib.pyplot as plt
+import argparse
 
+DEBUG = False
 
 class FrameDataset(Dataset):
     def __init__(self, root_dir, labeled=True, transform=None):
@@ -29,14 +31,12 @@ class FrameDataset(Dataset):
         frame_files = [f for f in os.listdir(video_dir) if f.endswith('.png')]
         frame_files.sort(key=lambda x: int(x.split('/')[-1].split('.')[0].split('_')[-1]))
 
-        # metadata: 
-        #   frame_file names in order
-        #   video_dir name
-        metadata = {
-            "frames": frame_files,
-            "video": video_dir
-        }
-        print("{}".format(metadata))
+        if DEBUG:
+            metadata = {
+                "frames": frame_files,
+                "video": video_dir
+            }
+            print("{}".format(metadata))
         
         frames = []
         for frame_file in frame_files:
@@ -54,13 +54,13 @@ class FrameDataset(Dataset):
             mask = torch.from_numpy(mask).long()
             return frames, mask
         else:
-            return frames, None
+            return frames
 
 
-def dataset_test():
-    train = "./data/train"
-    unlabeled = "./data/unlabeled"
-    val = "./data/val"
+def dataset_test(train, unlabeled, val):
+    # train = "./data/train"
+    # unlabeled = "./data/unlabeled"
+    # val = "./data/val"
     transform = transforms.Compose([
         transforms.ToTensor(),
     ])
@@ -93,7 +93,15 @@ def show_img_and_mask(img, mask):
     plt.show()
 
 if __name__ == "__main__":
-    dataset_test()
+    DEBUG = True
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--train_dir', type=str, default='./data/train')
+    parser.add_argument('--val_dir', type=str, default='./data/val')
+    parser.add_argument('--unlabel_dir', type=str, default='./data/unlabeled')
+
+    args = parser.parse_args()
+
+    dataset_test(args.train_dir, args.unlabel_dir, args.val_dir)
 
     # test dataset
     transform = transforms.Compose([

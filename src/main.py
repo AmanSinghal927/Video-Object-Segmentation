@@ -6,10 +6,10 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from dataset import VideoFramesDataset
-from model import JEPA
+from dataset import FrameDataset
+from model.jepa import JEPA
+from model.encoder import ViViT, EncoderViT
 from torchvision import transforms
-
 
 def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args):
     best_acc = 0
@@ -19,8 +19,10 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args
         model.train()
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(args.device), target.to(args.device)
-            optimizer.zero_grad()
+
             output = model(data)
+            
+            optimizer.zero_grad()
             loss = criterion(output, target)
             loss.backward()
             optimizer.step()
@@ -63,11 +65,11 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args
                 if not os.path.exists(args.save_dir):
                     os.makedirs(args.save_dir)
                 torch.save(model.state_dict(), os.path.join(
-                    args.save_dir, 'model.pth'))
+                    args.save_dir, f'model_{datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}.pth'))
                 
         print('Best accuracy: {:.0f}%'.format(100. * best_acc))
 
-def unsupervised_train(model, unlabel_loader, optimizer, criterion, args):
+def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, args):
     model.train()
     for epoch in range(args.epochs):
         for batch_idx, data in enumerate(unlabel_loader):
@@ -82,17 +84,24 @@ def unsupervised_train(model, unlabel_loader, optimizer, criterion, args):
             #   - each batch is a tensor of shape (batch_size, num_frames?, 3, 160, 240)
             # What is target?
 
-            output = model(data)
-            loss = criterion(output, output)
+            x, target = model(data)
+
+            loss = criterion(x, target)
             loss.backward()
             optimizer.step()
+            scheduler.step()
             if batch_idx % args.log_interval == 0:
                 print('Unsupervised Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                     epoch, batch_idx * len(data), len(unlabel_loader.dataset),
-                    100. * batch_idx / len(unlabel_loader), loss.item()))
+                    100. * batch_idx / len(unlabel_loader), loss.item()))  
                 
-            
-
+    # save model
+    if args.save_model:
+        if not os.path.exists(args.save_dir):
+            os.makedirs(args.save_dir)
+        torch.save(model.state_dict(), os.path.join(
+            args.save_dir, f'pretrain_model_{datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}.pth'))
+                      
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -108,7 +117,6 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--pretrained', action='store_true', default=False)
     parser.add_argument('--resume', type=str, default=None)
-    parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--unsupervised', action='store_true', default=False)
     parser.add_argument('--debug_dataloader', action='store_true', default=False)
     args = parser.parse_args()
@@ -119,16 +127,23 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
+    # Set device
+    args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # check which device is available
+    if torch.cuda.is_available():
+        print("Using GPU")
+    else:
+        print("Using CPU")
+
+
     # Transformations
     transform = transforms.Compose([
         transforms.ToTensor(),
     ])
 
-    print(args.batch_size)
-
     # Load data
     train_loader = DataLoader(
-        dataset=VideoFramesDataset(args.data_dir, 'train', transform=transform),
+        dataset=FrameDataset(args.data_dir + "/" + 'train', labeled=True, transform=transform),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
@@ -136,7 +151,7 @@ if __name__ == "__main__":
     )
 
     val_loader = DataLoader(
-        dataset=VideoFramesDataset(args.data_dir, 'val', transform=transform),
+        dataset=FrameDataset(args.data_dir + "/" + 'val', labeled=True, transform=transform),
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
@@ -145,7 +160,7 @@ if __name__ == "__main__":
 
     if args.unsupervised:
         unlabel_loader = DataLoader(
-            dataset=VideoFramesDataset(args.data_dir, 'unlabel', transform=transform),
+            dataset=FrameDataset(args.data_dir + "/" + 'unlabeled', labeled=False, transform=transform),
             batch_size=args.batch_size,
             shuffle=True,
             num_workers=args.num_workers,
@@ -159,18 +174,54 @@ if __name__ == "__main__":
             print(mask.shape)
             break
 
+    # Layers
+    encoder_x = ViViT(
+        image_size=(160, 240),
+        image_patch_size=(8, 8),
+        frames=11,
+        frame_patch_size=1,
+        num_classes=512,
+        dim=512,
+        spatial_depth=6,
+        temporal_depth=6,
+        heads=8,
+        mlp_dim=2048,
+    )
+
+    encoder_y = ViViT(
+        image_size=(160, 240),
+        image_patch_size=(8, 8),
+        frames=1,
+        frame_patch_size=1,
+        num_classes=512,
+        dim=512,
+        spatial_depth=6,
+        temporal_depth=6,
+        heads=8,
+        mlp_dim=2048,
+    )
+
+
+    predictor = nn.Sequential(
+        nn.Linear(512, 256),
+        nn.ReLU(),
+        nn.Linear(256, 256),
+        nn.ReLU(),
+        nn.Linear(256, 512),
+    )
+
     # Load model
     model = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
-                 embed_dim=512, encoder_x=None, predictor=None)
+                 embed_dim=512, encoder_x=encoder_x, encoder_y=encoder_y, predictor=predictor).to(args.device)
 
     # Load optimizer
-    optimizer = ...  # TODO: choose optimizer
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
 
     # Load scheduler
-    scheduler = ...  # TODO: choose scheduler
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
     # Load loss function
-    criterion = ...  # TODO: choose loss function
+    criterion = nn.MSELoss()
 
     # Load checkpoint
     if args.resume is not None:
@@ -183,7 +234,7 @@ if __name__ == "__main__":
 
     # Train model
     if args.unsupervised:
-        unsupervised_train(model, unlabel_loader, optimizer, criterion, args)
+        unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, args)
     else:
         train(model, train_loader, val_loader,
             optimizer, scheduler, criterion, args)
