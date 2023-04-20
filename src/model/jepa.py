@@ -41,6 +41,11 @@ class JEPA(nn.Module):
         print("In JEPA forward")
         print(frames.shape)
 
+        # TODO: decide architecture for JEPA
+        #  1. current architecture: 11 frames together (b, embed_dim) (ViViT) encoded predicting 1 frame (ViViT (could be ViT))
+        #  2. 1 frame encoded predicting 1 frame
+        #  3. 11 frames encoded individually with ViT (b, 11, embed_dim) predicting 1 frame (b, 1, embed_dim)
+
         # split the frames into x and y
         # x: (b, 11, c, h, w)
         # y: (b, 1, c, h, w)
@@ -58,6 +63,10 @@ class JEPA(nn.Module):
         print("y: ", y.shape)
 
         # encode x and y
+        # TODO: decide on strategy for encoding x and y
+        #  1. encode each frame of x individually and store in s_embeds
+        #     this lets use use the same encoder for x and y, a ViT encoder
+        #  2. encode x with ViVit encoder, same with y
         # x_embed: (b, embed_dim)
         # y_embed: (b, embed_dim)
         x_embed = self.encoder_x(x)
