@@ -2,6 +2,23 @@ import torch
 import torch.nn as nn
 import copy
 
+class LatentMLP(nn.Module):
+    def __init__(self, dim, depth, mlp_dim):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+            self.layers.append(nn.Sequential(
+                nn.Linear(dim, mlp_dim),
+                nn.BatchNorm1d(mlp_dim),
+                nn.LeakyReLU(),
+                nn.Linear(mlp_dim, dim),
+            ))
+
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
 class PatchEmbedding(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=64):
         super().__init__()
@@ -35,6 +52,7 @@ class JEPA(nn.Module):
         self.encoder_y = encoder_y
         self.predictor = predictor
         self.norm = nn.LayerNorm(embed_dim)
+        self.projection = LatentMLP(embed_dim, 2, 256)
 
     # frames: (b, num_frames=22, c, h, w)
     def forward(self, frames):
@@ -73,6 +91,12 @@ class JEPA(nn.Module):
         y_embed = self.encoder_y(y)
         # print("x_embed: ", x_embed.shape)
         # print("y_embed: ", y_embed.shape)
+        x_embed = self.norm(x_embed)
+        y_embed = self.norm(y_embed)
+
+        z = self.projection(x_embed)
+        # L1 norm of z
+        latent_loss = torch.norm(z, p=1, dim=1).mean()
         
         # predictor
         # from first 11 frames, predict the frame that is self.skip frames away
@@ -94,7 +118,7 @@ class JEPA(nn.Module):
         # frames_embed: (b, 22, num_tokens, embed_dim)
         # frames_embed = torch.cat((first_frames, last_frames), dim=1)
 
-        return pred_y, y_embed
+        return pred_y, y_embed, latent_loss
 
 
 

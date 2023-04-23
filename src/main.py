@@ -8,7 +8,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from dataset import FrameDataset
 from model.jepa import JEPA
-from model.encoder import ViViT, EncoderViT
+from model.encoder import ViViT
+from x_transformers import Decoder
 from torchvision import transforms
 
 def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args):
@@ -84,9 +85,9 @@ def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, a
             #   - each batch is a tensor of shape (batch_size, num_frames?, 3, 160, 240)
             # What is target?
 
-            x, target = model(data)
+            x, target, latent_loss = model(data)
 
-            loss = criterion(x, target)
+            loss = criterion(x, target) + (args.lamb * latent_loss)
             loss.backward()
             optimizer.step()
             if batch_idx % args.log_interval == 0:
@@ -121,6 +122,7 @@ if __name__ == "__main__":
     parser.add_argument('--unsupervised', action='store_true', default=False)
     parser.add_argument('--frame_skip', type=int, default=0)
     parser.add_argument('--debug_dataloader', action='store_true', default=False)
+    parser.add_argument('--lamb', type=float, default=0.1)
     args = parser.parse_args()
 
     # Set random seed
@@ -204,12 +206,18 @@ if __name__ == "__main__":
     )
 
 
-    predictor = nn.Sequential(
-        nn.Linear(512, 256),
-        nn.ReLU(),
-        nn.Linear(256, 256),
-        nn.ReLU(),
-        nn.Linear(256, 512),
+    # predictor = nn.Sequential(
+    #     nn.Linear(512, 256),
+    #     nn.ReLU(),
+    #     nn.Linear(256, 256),
+    #     nn.ReLU(),
+    #     nn.Linear(256, 512),
+    # )
+
+    predictor = Decoder(
+        dim = 512,
+        depth = 6,
+        heads = 8,
     )
 
     # Load model
