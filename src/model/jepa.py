@@ -55,7 +55,7 @@ class JEPA(nn.Module):
         self.projection = LatentMLP(embed_dim, 2, 256)
 
     # frames: (b, num_frames=22, c, h, w)
-    def forward(self, frames):
+    def forward(self, x, y, enc_xs, enc_ys):
         # print("In JEPA forward")
         # print(frames.shape)
 
@@ -64,19 +64,6 @@ class JEPA(nn.Module):
         #  2. 1 frame encoded predicting 1 frame
         #  3. 11 frames encoded individually with ViT (b, 11, embed_dim) predicting 1 frame (b, 1, embed_dim)
 
-        # split the frames into x and y
-        # x: (b, 11, c, h, w)
-        # y: (b, 1, c, h, w)
-        x = frames[:, :11, :, :, :]
-        y = frames[:, 11 + self.skip, :, :, :].unsqueeze(1)
-        # check to see if 11th frame (x) and 12th + skip frame (y) are the different frames
-        assert not torch.equal(x[:, 10, :, :, :], y[:, 0, :, :, :])
-        # print("x: ", x.shape)
-        # print("y: ", y.shape)
-
-        # rearrange for encoder (b, num_frames=22, c, h, w) to (b, c, num_frames=22, h, w)
-        x = x.permute(0, 2, 1, 3, 4)
-        y = y.permute(0, 2, 1, 3, 4)
         # print("x: ", x.shape)
         # print("y: ", y.shape)
 
@@ -91,6 +78,18 @@ class JEPA(nn.Module):
         y_embed = self.encoder_y(y)
         # print("x_embed: ", x_embed.shape)
         # print("y_embed: ", y_embed.shape)
+
+        enc_xs.append(x_embed)
+        enc_ys.append(y_embed)
+
+        concat_enc_xs = torch.cat(enc_xs, dim=1)
+        concat_enc_ys = torch.cat(enc_ys, dim=1)
+        print("concat_enc_xs: ", concat_enc_xs.shape)
+        print("concat_enc_ys: ", concat_enc_ys.shape)
+
+        # Pass through HSA_x and HSA_y
+
+
         x_embed = self.norm(x_embed)
         y_embed = self.norm(y_embed)
 
