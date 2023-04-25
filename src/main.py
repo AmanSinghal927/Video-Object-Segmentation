@@ -9,8 +9,17 @@ from torch.utils.data import DataLoader
 from dataset import FrameDataset
 from model.jepa import JEPA
 from model.encoder import ViViT
-from x_transformers import Decoder
 from torchvision import transforms
+from x_transformers import Decoder, Encoder
+import copy
+
+JEPAs = [{
+    "model": None,
+    "optimizer": None,
+    "scheduler": None,
+    "criterion": None,
+    "args": None
+} for _ in range(11)]
 
 def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args):
     best_acc = 0
@@ -70,7 +79,7 @@ def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args
                 
         print('Best accuracy: {:.0f}%'.format(100. * best_acc))
 
-def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, args):
+def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, args, skip=0):
     model.train()
     for epoch in range(args.epochs):
         for batch_idx, data in enumerate(unlabel_loader):
@@ -84,15 +93,37 @@ def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, a
             #   - each frame image is a tensor of shape (3, 160, 240)
             #   - each batch is a tensor of shape (batch_size, num_frames?, 3, 160, 240)
             # What is target?
+             # split the frames into x and y
+            # x: (b, 11, c, h, w)
+            # y: (b, 1, c, h, w)
+            data_x = data[:, :11, :, :, :]
+            data_y = data[:, 11 + skip, :, :, :].unsqueeze(1)
+   
+            # print("x: ", x.shape)
+            # print("y: ", y.shape)
 
-            x, target, latent_loss = model(data)
+            # rearrange for encoder (b, num_frames=22, c, h, w) to (b, c, num_frames=22, h, w)
+            data_x = data_x.permute(0, 2, 1, 3, 4)
+            data_y = data_y.permute(0, 2, 1, 3, 4)
+
+            # encode with previous JEPAs
+            encoded_xs = []
+            encoded_ys = []
+            with torch.no_grad():
+                for i in range(skip):
+                    enc_x = JEPAs[i]["model"].encoder_x(data_x)
+                    enc_y = JEPAs[i]["model"].encoder_y(data_y)
+                    encoded_xs.append(enc_x)
+                    encoded_ys.append(enc_y)
+
+            x, target, latent_loss = model(data_x, data_y, encoded_xs, encoded_ys)
 
             loss = criterion(x, target) + (args.lamb * latent_loss)
             loss.backward()
             optimizer.step()
             if batch_idx % args.log_interval == 0:
-                print('Unsupervised Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                    epoch, batch_idx * len(data), len(unlabel_loader.dataset),
+                print('Unsupervised Train Epoch for JEPA #{} : {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                    skip + 1, epoch, batch_idx * len(data), len(unlabel_loader.dataset),
                     100. * batch_idx / len(unlabel_loader), loss.item()))  
         scheduler.step()
                 
@@ -101,7 +132,7 @@ def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, a
         if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir)
         torch.save(model.state_dict(), os.path.join(
-            args.save_dir, f'pretrain_model_skips{args.frame_skips}_{datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")}.pth'))
+            args.save_dir, f'pretrain_JEPA_skips{skip}.pth'))
                       
 
 if __name__ == "__main__":
@@ -112,7 +143,7 @@ if __name__ == "__main__":
     parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--log_interval', type=int, default=100)
-    parser.add_argument('--save_model', action='store_true', default=False)
+    parser.add_argument('--save_model', action='store_true', default=True)
     parser.add_argument('--load_model', type=str, default=None)
     parser.add_argument('--save_dir', type=str, default='model')
     parser.add_argument('--data_dir', type=str, default='data')
@@ -163,8 +194,10 @@ if __name__ == "__main__":
     )
 
     if args.unsupervised:
+        ds = FrameDataset(args.data_dir + "/" + 'unlabeled', labeled=False, transform=transform)
+        ds = torch.utils.data.Subset(ds, list(range(0, 100)))
         unlabel_loader = DataLoader(
-            dataset=FrameDataset(args.data_dir + "/" + 'unlabeled', labeled=False, transform=transform),
+            dataset=ds,
             batch_size=args.batch_size,
             shuffle=True,
             num_workers=args.num_workers,
@@ -205,38 +238,70 @@ if __name__ == "__main__":
         mlp_dim=2048,
     )
 
-
-    # predictor = nn.Sequential(
-    #     nn.Linear(512, 256),
-    #     nn.ReLU(),
-    #     nn.Linear(256, 256),
-    #     nn.ReLU(),
-    #     nn.Linear(256, 512),
-    # )
-
+    # predictor, output (bs, embed_dim)
     predictor = Decoder(
-        dim = 512,
-        depth = 6,
-        heads = 8,
+        dim=512,
+        depth=6,
+        heads=8,
+    )
+
+    enc = Encoder(
+        dim=512,
+        depth=6,
+        heads=8,
+    )
+
+    rand_frames = torch.rand((args.batch_size, 3, 11, 160, 240))
+
+    try:
+        enc_rand = encoder_x(rand_frames)
+        print(enc_rand.shape)
+        pred_rand = predictor(enc_rand)
+        print(pred_rand.shape)
+        enc_rand = enc(enc_rand)
+        print(enc_rand.shape)
+    except:
+        print("Error in model")
+
+    predictor = nn.Sequential(
+        nn.Linear(512, 1024),
+        nn.BatchNorm1d(1024),
+        nn.ReLU(),
+        nn.Linear(1024, 512),
     )
 
     # Load model
-    model = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
-                 embed_dim=512, 
-                 encoder_x=encoder_x, 
-                 encoder_y=encoder_y, 
-                 predictor=predictor, 
-                 skip=args.frame_skip
-                 ).to(args.device)
+    # model = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
+    #              embed_dim=512, 
+    #              encoder_x=encoder_x, 
+    #              encoder_y=encoder_y, 
+    #              predictor=predictor, 
+    #              skip=args.frame_skip
+    #              ).to(args.device)
 
-    # Load optimizer
-    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
+    # # Load optimizer
+    # optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
 
-    # Load scheduler
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    # # Load scheduler
+    # scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 
-    # Load loss function
-    criterion = nn.MSELoss()
+    # # Load loss function
+    # criterion = nn.MSELoss()
+
+    # for i in range(len(JEPAs)):
+    #     m = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
+    #                 embed_dim=512, 
+    #                 encoder_x=copy.deepcopy(encoder_x), 
+    #                 encoder_y=copy.deepcopy(encoder_y), 
+    #                 predictor=copy.deepcopy(predictor), 
+    #                 skip=i
+    #                 ).to(args.device)
+    #     JEPAs[i]["model"] = m
+    #     JEPAs[i]["optimizer"] = optim.SGD(m.parameters(), lr=args.lr, momentum=0.9)
+    #     JEPAs[i]["scheduler"] = optim.lr_scheduler.StepLR(JEPAs[i]["optimizer"], step_size=10, gamma=0.1)
+    #     JEPAs[i]["criterion"] = nn.MSELoss()
+
+    print("Models loaded")
 
     # Load pretrained model
     if args.load_model is not None:
@@ -253,13 +318,27 @@ if __name__ == "__main__":
 
     # Train model
     if args.unsupervised:
-        unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, args)
+        # unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, args)
+        for i in range(len(JEPAs)):
+            m = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
+                    embed_dim=512, 
+                    encoder_x=copy.deepcopy(encoder_x), 
+                    encoder_y=copy.deepcopy(encoder_y), 
+                    predictor=copy.deepcopy(predictor), 
+                    skip=i
+                    ).to(args.device)
+            JEPAs[i]["model"] = m
+            JEPAs[i]["optimizer"] = optim.SGD(m.parameters(), lr=args.lr, momentum=0.9)
+            JEPAs[i]["scheduler"] = optim.lr_scheduler.StepLR(JEPAs[i]["optimizer"], step_size=10, gamma=0.1)
+            JEPAs[i]["criterion"] = nn.MSELoss()  
+            print(f"Training JEPA {i}")
+            unsupervised_train(JEPAs[i]["model"], unlabel_loader, JEPAs[i]["optimizer"], JEPAs[i]["criterion"], JEPAs[i]["scheduler"], args, i)
     else:
         train(model, train_loader, val_loader,
             optimizer, scheduler, criterion, args)
 
     # Save model
-    if args.save_model:
+    if args.save_model and not args.unsupervised:
         if not os.path.exists(args.save_dir):
             os.makedirs(args.save_dir)
         torch.save(model.state_dict(), os.path.join(
