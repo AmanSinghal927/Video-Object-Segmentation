@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from dataset import FrameDataset
 from model.jepa import JEPA
-from model.encoder import ViViT
+from model.encoder import ViViT, HierarchicalAttentionEncoder, FeedForward, Transformer
 from torchvision import transforms
 from x_transformers import Decoder, Encoder
 import copy
@@ -133,6 +133,67 @@ def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, a
             os.makedirs(args.save_dir)
         torch.save(model.state_dict(), os.path.join(
             args.save_dir, f'pretrain_JEPA_skips{skip}.pth'))
+
+def finetune_VAE(model, train_loader, val_loader, optimizer, criterion, scheduler, args):
+    best_acc = 0
+    for epoch in range(args.epochs):
+        train_loss = 0
+        train_acc = 0
+        model.train()
+        for batch_idx, data in enumerate(train_loader):
+            data = data.to(args.device)
+            optimizer.zero_grad()
+            output = model(data)
+            loss = criterion(output, data)
+            train_loss += loss.item()
+            pred = output.argmax(dim=1, keepdim=True)
+            train_acc += pred.eq(data.view_as(pred)).sum().item()
+            loss.backward()
+            optimizer.step()
+            if batch_idx % args.log_interval == 0:
+                print('Finetune VAE Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                    epoch, batch_idx * len(data), len(train_loader.dataset),
+                    100. * batch_idx / len(train_loader), loss.item()))
+        train_loss /= len(train_loader.dataset)
+        train_acc /= len(train_loader.dataset)
+        print('Finetune VAE Train set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)'.format(
+            train_loss, train_acc *
+            len(train_loader.dataset), len(train_loader.dataset),
+            100. * train_acc))
+
+        val_loss = 0
+        val_acc = 0
+        model.eval()
+        with torch.no_grad():
+            for data in val_loader:
+                data = data.to(args.device)
+                output = model(data)
+                loss = criterion(output, data)
+                val_loss += loss.item()
+                pred = output.argmax(dim=1, keepdim=True)
+                val_acc += pred.eq(data.view_as(pred)).sum().item()
+        val_loss /= len(val_loader.dataset)
+        val_acc /= len(val_loader.dataset)
+        print('Finetune VAE Validation set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)'.format(
+            val_loss, val_acc *
+            len(val_loader.dataset), len(val_loader.dataset),
+            100. * val_acc))
+
+        scheduler.step()
+        if val_acc > best_acc:
+            best_acc = val_acc
+            if args.save_model:
+                if not os.path.exists(args.save_dir):
+                    os.makedirs(args.save_dir)
+                torch.save(model.state_dict(), os.path.join(
+                    args.save
+                    _dir, f'finetune_VAE_{args.model}_best.pth'))
+
+    if args.save_model:
+        if not os.path.exists(args.save_dir):
+            os.makedirs(args.save_dir)
+        torch.save(model.state_dict(), os.path.join(
+            args.save_dir, f'finetune_VAE_{args.model}_last.pth'))
                       
 
 if __name__ == "__main__":
@@ -195,7 +256,7 @@ if __name__ == "__main__":
 
     if args.unsupervised:
         ds = FrameDataset(args.data_dir + "/" + 'unlabeled', labeled=False, transform=transform)
-        ds = torch.utils.data.Subset(ds, list(range(0, 100)))
+        # ds = torch.utils.data.Subset(ds, list(range(0, 100)))
         unlabel_loader = DataLoader(
             dataset=ds,
             batch_size=args.batch_size,
@@ -263,11 +324,15 @@ if __name__ == "__main__":
     except:
         print("Error in model")
 
-    predictor = nn.Sequential(
-        nn.Linear(512, 1024),
-        nn.BatchNorm1d(1024),
-        nn.ReLU(),
-        nn.Linear(1024, 512),
+    # encoder predictor module (bs, 512) -> (bs, 512)
+    # 
+    predictor = Transformer(
+        dim=512,
+        depth=6,
+        heads=8,
+        dim_head=64, 
+        mlp_dim=2048, 
+        dropout=0.1,
     )
 
     # Load model
@@ -320,10 +385,18 @@ if __name__ == "__main__":
     if args.unsupervised:
         # unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, args)
         for i in range(len(JEPAs)):
+            hsa_x = HierarchicalAttentionEncoder(
+                num_encoders=i + 1,
+                embed_dim=512,
+                hidden_dim=512,
+            )
+            hsa_y = copy.deepcopy(hsa_x)
             m = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
                     embed_dim=512, 
                     encoder_x=copy.deepcopy(encoder_x), 
                     encoder_y=copy.deepcopy(encoder_y), 
+                    hsa_x=hsa_x,
+                    hsa_y=hsa_y,
                     predictor=copy.deepcopy(predictor), 
                     skip=i
                     ).to(args.device)
