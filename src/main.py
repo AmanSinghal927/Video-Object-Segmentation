@@ -416,3 +416,6 @@ if __name__ == "__main__":
             os.makedirs(args.save_dir)
         torch.save(model.state_dict(), os.path.join(
             args.save_dir, f'model_{datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}.pth'))
+
+# Train unsupervised command
+# python <path-to>/main.py --batch_size=<bs> --epochs=<epochs> --lr=<lr> --unsupervised --data_dir=<path-to-data> --save_dir=<path-to-save-model>
