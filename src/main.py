@@ -8,17 +8,14 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from dataset import FrameDataset
 from model.jepa import JEPA
-from model.encoder import ViViT, HierarchicalAttentionEncoder, FeedForward, Transformer
+from model.encoder import ViViT, HierarchicalAttentionEncoder, FeedForward, Transformer, JEPA_XEncoder_Predictor
+from model.vae import VanillaVAE
 from torchvision import transforms
 from x_transformers import Decoder, Encoder
 import copy
 
 JEPAs = [{
     "model": None,
-    "optimizer": None,
-    "scheduler": None,
-    "criterion": None,
-    "args": None
 } for _ in range(11)]
 
 def train(model, train_loader, val_loader, optimizer, scheduler, criterion, args):
@@ -134,6 +131,13 @@ def unsupervised_train(model, unlabel_loader, optimizer, criterion, scheduler, a
         torch.save(model.state_dict(), os.path.join(
             args.save_dir, f'pretrain_JEPA_skips{skip}.pth'))
 
+def get_iou(pred, label):
+    # intersection over union of segmentation masks
+    intersection = np.logical_and(pred, label)
+    union = np.logical_or(pred, label)
+    return np.sum(intersection) / np.sum(union)
+
+
 def finetune_VAE(model, train_loader, val_loader, optimizer, criterion, scheduler, args):
     best_acc = 0
     for epoch in range(args.epochs):
@@ -141,19 +145,37 @@ def finetune_VAE(model, train_loader, val_loader, optimizer, criterion, schedule
         train_acc = 0
         model.train()
         for batch_idx, data in enumerate(train_loader):
-            data = data.to(args.device)
+            frames, mask = data
+            frames = frames.to(args.device)
+            mask = mask.to(args.device)
+
+            # split 
+            data_x = frames[:, :11, :, :, :]
+            data_y = frames[:, 11 + skip, :, :, :].unsqueeze(1)
+   
+            # print("x: ", x.shape)
+            # print("y: ", y.shape)
+
+            # rearrange for encoder (b, num_frames=22, c, h, w) to (b, c, num_frames=22, h, w)
+            data_x = data_x.permute(0, 2, 1, 3, 4)
+            data_y = data_y.permute(0, 2, 1, 3, 4)
+
             optimizer.zero_grad()
-            output = model(data)
-            loss = criterion(output, data)
-            train_loss += loss.item()
-            pred = output.argmax(dim=1, keepdim=True)
-            train_acc += pred.eq(data.view_as(pred)).sum().item()
+            pred_frame, frame, mu, logvar = model(data_y)
+            loss = model.loss_function([pred_frame, mask, mu, logvar])
+            t_loss, recon_loss, KLD = loss['loss'], loss['Reconstruction_Loss'], loss['KLD']
+
+            train_loss += t_loss
+            iou = get_iou(pred_frame, mask)
+            train_acc += iou
             loss.backward()
             optimizer.step()
             if batch_idx % args.log_interval == 0:
                 print('Finetune VAE Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                     epoch, batch_idx * len(data), len(train_loader.dataset),
                     100. * batch_idx / len(train_loader), loss.item()))
+                print('IoU: {:.6f}, Recon Loss: {:.6f}, KLD: {:.6f}'.format(iou, recon_loss, KLD))
+        scheduler.step()
         train_loss /= len(train_loader.dataset)
         train_acc /= len(train_loader.dataset)
         print('Finetune VAE Train set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)'.format(
@@ -211,6 +233,7 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='resnet18')
     parser.add_argument('--pretrained', action='store_true', default=False)
     parser.add_argument('--resume', type=str, default=None)
+    parser.add_argument('--finetune', action='store_true', default=False)
     parser.add_argument('--unsupervised', action='store_true', default=False)
     parser.add_argument('--frame_skip', type=int, default=0)
     parser.add_argument('--debug_dataloader', action='store_true', default=False)
@@ -326,13 +349,12 @@ if __name__ == "__main__":
 
     # encoder predictor module (bs, 512) -> (bs, 512)
     # 
-    predictor = Transformer(
-        dim=512,
-        depth=6,
-        heads=8,
-        dim_head=64, 
-        mlp_dim=2048, 
-        dropout=0.1,
+    predictor = nn.Sequential(
+        nn.Linear(512, 2048),
+        nn.GELU(),
+        nn.Dropout(dropout),
+        nn.Linear(2048, 512),
+        nn.Dropout(0.1)
     )
 
     # Load model
@@ -400,15 +422,65 @@ if __name__ == "__main__":
                     predictor=copy.deepcopy(predictor), 
                     skip=i
                     ).to(args.device)
-            JEPAs[i]["model"] = m
-            JEPAs[i]["optimizer"] = optim.SGD(m.parameters(), lr=args.lr, momentum=0.9)
-            JEPAs[i]["scheduler"] = optim.lr_scheduler.StepLR(JEPAs[i]["optimizer"], step_size=10, gamma=0.1)
-            JEPAs[i]["criterion"] = nn.MSELoss()  
+            # JEPAs[i]["model"] = m
+            optimizer = optim.SGD(m.parameters(), lr=args.lr, momentum=0.9)
+            scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+            criterion = nn.MSELoss()  
             print(f"Training JEPA {i}")
-            unsupervised_train(JEPAs[i]["model"], unlabel_loader, JEPAs[i]["optimizer"], JEPAs[i]["criterion"], JEPAs[i]["scheduler"], args, i)
-    else:
-        train(model, train_loader, val_loader,
-            optimizer, scheduler, criterion, args)
+            unsupervised_train(m, unlabel_loader, optimizer, criterion, scheduler, args, i)
+            print(f"Finished training JEPA {i}")
+            JEPAs[i]["model"] = m
+            torch.cuda.empty_cache()
+    elif args.finetune:
+
+        # Load saved JEPAs
+        for i in range(len(JEPAs)):
+            hsa_x = HierarchicalAttentionEncoder(
+                num_encoders=i + 1,
+                embed_dim=512,
+                hidden_dim=512,
+            )
+            hsa_y = copy.deepcopy(hsa_x)
+            m = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
+                    embed_dim=512, 
+                    encoder_x=copy.deepcopy(encoder_x), 
+                    encoder_y=copy.deepcopy(encoder_y), 
+                    hsa_x=hsa_x,
+                    hsa_y=hsa_y,
+                    predictor=copy.deepcopy(predictor), 
+                    skip=i
+                    ).to(args.device)
+            optimizer = optim.SGD(m.parameters(), lr=args.lr, momentum=0.9)
+            JEPAs.append({
+                "model": m,
+                "optimizer": optimizer,
+                "scheduler": optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1),
+                "criterion": nn.MSELoss()
+            })
+            JEPAs[i]["model"].load_state_dict(torch.load(args.save_dir + f"/JEPA_{i}.pth"))
+            print(f"Loaded JEPA {i}")
+
+        encoders_x = []
+        encoders_y = []
+        for i in range(len(JEPAs)):
+            encoders_x.append(JEPAs[i]["model"].encoder_x)
+            encoders_y.append(JEPAs[i]["model"].encoder_y)
+
+        jepa_encoder = JEPA_XEncoder_Predictor(
+            embed_dim=512,
+            encoders_x=encoders_x,
+            predictor=JEPAs[-1]["model"].predictor
+            hsa_x=JEPAs[-1]["model"].hsa_x,
+        )
+
+        model = VanillaVAE(
+            in_channels=3,
+            encoder=jepa_encoder,
+            latent_dim=128,
+        ).to(args.device)
+
+
+        finetune(model, train_loader, val_loader, optimizer, criterion, scheduler, args)
 
     # Save model
     if args.save_model and not args.unsupervised:
