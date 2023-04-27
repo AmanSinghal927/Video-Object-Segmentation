@@ -44,12 +44,14 @@ class PatchEmbedding(nn.Module):
 
 # input size (b, c, h, w) and output size (b, h, w), where b is the batch size, c is the number of channels, h is the height, and w is the width.
 class JEPA(nn.Module):
-    def __init__(self, img_size, patch_size, in_channels, embed_dim, encoder_x, encoder_y, predictor, skip=0):
+    def __init__(self, img_size, patch_size, in_channels, embed_dim, encoder_x, encoder_y, hsa_x, hsa_y, predictor, skip=0):
         super(JEPA, self).__init__()
 
         self.skip = skip
         self.encoder_x = encoder_x
         self.encoder_y = encoder_y
+        self.hsa_x = hsa_x
+        self.hsa_y = hsa_y
         self.predictor = predictor
         self.norm = nn.LayerNorm(embed_dim)
         self.projection = LatentMLP(embed_dim, 2, 256)
@@ -82,13 +84,16 @@ class JEPA(nn.Module):
         enc_xs.append(x_embed)
         enc_ys.append(y_embed)
 
-        concat_enc_xs = torch.cat(enc_xs, dim=1)
-        concat_enc_ys = torch.cat(enc_ys, dim=1)
-        print("concat_enc_xs: ", concat_enc_xs.shape)
-        print("concat_enc_ys: ", concat_enc_ys.shape)
+        concat_enc_xs = torch.stack(enc_xs, dim=1)
+        concat_enc_ys = torch.stack(enc_ys, dim=1)
+        # print("concat_enc_xs: ", concat_enc_xs.shape)
+        # print("concat_enc_ys: ", concat_enc_ys.shape)
 
-        # Pass through HSA_x and HSA_y
-
+        # Pass through HSA_x and HSA_y -> (bs, embed_dim)
+        x_embed = self.hsa_x(concat_enc_xs)
+        y_embed = self.hsa_y(concat_enc_ys)
+        # print("x_embed: ", x_embed.shape)
+        # print("y_embed: ", y_embed.shape)
 
         x_embed = self.norm(x_embed)
         y_embed = self.norm(y_embed)
@@ -102,7 +107,11 @@ class JEPA(nn.Module):
         # first 11 frames: (b, 11, num_tokens, embed_dim)
         # predict the frame that is self.skip frames away
         # pred_y: (b, num_tokens, embed_dim)
+        # squeeze + unqueeze because predictor expects (b, num_tokens, embed_dim) as transformer
+        # avoid if predictor is FC
+        x_embed = x_embed.unsqueeze(1)
         pred_y = self.predictor(x_embed)
+        pred_y = pred_y.squeeze(1)
         # print('After Predictor: ', pred_y.shape)
 
         # calculate the residual
@@ -118,6 +127,78 @@ class JEPA(nn.Module):
         # frames_embed = torch.cat((first_frames, last_frames), dim=1)
 
         return pred_y, y_embed, latent_loss
+
+class JEPA_XEncoder_Predictor(nn.Module):
+    def __init__(self, embed_dim, encoders_x, predictor, hsa_x)
+        super(JEPA_Encoder, self).__init__()
+        # For each JEPA (11), encode first 11 frames, perform HSA, predict next frame
+        # encoders_x: list of encoders for each JEPA
+        # predictor: predictor from last JEPA
+        # hsa_x: HSA for x from last JEPA
+        self.encoders_x = encoders_x
+        self.norm = nn.LayerNorm(embed_dim)    
+        self.predictor = predictor
+        self.hsa_x = hsa_x
+
+    # frames: (b, c, num_frames=22, h, w)
+    def forward(self, x):
+        # print("In JEPA forward")
+        # print(frames.shape)
+        encoded_xs = []
+        with torch.no_grad():
+            for i in range(len(self.encoders_x)):
+                enc_x = self.encoders_x[i](x)
+                encoded_xs.append(enc_x)
+        
+            concat_encoded_xs = torch.stack(encoded_xs, dim=1)
+            # print("concat_encoded_xs: ", concat_encoded_xs.shape)
+
+            # Pass through HSA_x -> (bs, embed_dim)
+            x_embed = self.hsa_x(concat_encoded_xs)
+            # print("x_embed: ", x_embed.shape)
+
+            x_embed = self.norm(x_embed)
+
+            # predictor
+            # from first 11 frames, predict the frame that is self.skip frames away
+            # first 11 frames: (b, 11, num_tokens, embed_dim)
+            # predict the frame that is self.skip frames away
+            # pred_y: (b, num_tokens, embed_dim)
+            # squeeze + unqueeze because predictor expects (b, num_tokens, embed_dim) as transformer
+            # avoid if predictor is FC
+            x_embed = x_embed.unsqueeze(1)
+            pred_y = self.predictor(x_embed)
+            pred_y = pred_y.squeeze(1)
+
+            return pred_y
+
+class JEPA_YEncoder(nn.Module):
+    def __init__(self, embed_dim, encoders_y, hsa_y):
+        super(JEPA_YEncoder, self).__init__()
+        # For each JEPA (11), encode last 11 frames, perform HSA
+        # encoders_y: list of encoders for each JEPA
+        # hsa_y: HSA for y from last JEPA
+        self.encoders_y = encoders_y
+        self.hsa_y = hsa_y
+
+    # frames: (b, c, num_frames=22, h, w)
+    def forward(self, y):
+        # print("In JEPA forward")
+        # print(frames.shape)
+        encoded_ys = []
+        with torch.no_grad():
+            for i in range(len(self.encoders_y)):
+                enc_y = self.encoders_y[i](y)
+                encoded_ys.append(enc_y)
+        
+            concat_encoded_ys = torch.stack(encoded_ys, dim=1)
+            # print("concat_encoded_ys: ", concat_encoded_ys.shape)
+
+            # Pass through HSA_y -> (bs, embed_dim)
+            y_embed = self.hsa_y(concat_encoded_ys)
+            # print("y_embed: ", y_embed.shape)
+
+            return y_embed
 
 
 
