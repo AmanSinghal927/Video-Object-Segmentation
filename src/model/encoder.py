@@ -252,3 +252,86 @@ class ViViT(nn.Module):
 
         x = self.to_latent(x)
         return self.mlp_head(x)
+
+class HierAttNet(nn.Module):
+    def __init__(self, word_hidden_size, sent_hidden_size, batch_size, num_classes, pretrained_word2vec_path,
+                 max_sent_length, max_word_length):
+        super(HierAttNet, self).__init__()
+        self.batch_size = batch_size
+        self.word_hidden_size = word_hidden_size
+        self.sent_hidden_size = sent_hidden_size
+        self.max_sent_length = max_sent_length
+        self.max_word_length = max_word_length
+        self.word_att_net = WordAttNet(pretrained_word2vec_path, word_hidden_size)
+        self.sent_att_net = SentAttNet(sent_hidden_size, word_hidden_size, num_classes)
+        self._init_hidden_state()
+
+    def _init_hidden_state(self, last_batch_size=None):
+        if last_batch_size:
+            batch_size = last_batch_size
+        else:
+            batch_size = self.batch_size
+        self.word_hidden_state = torch.zeros(2, batch_size, self.word_hidden_size)
+        self.sent_hidden_state = torch.zeros(2, batch_size, self.sent_hidden_size)
+        if torch.cuda.is_available():
+            self.word_hidden_state = self.word_hidden_state.cuda()
+            self.sent_hidden_state = self.sent_hidden_state.cuda()
+
+    def forward(self, input):
+
+        output_list = []
+        input = input.permute(1, 0, 2)
+        for i in input:
+            output, self.word_hidden_state = self.word_att_net(i.permute(1, 0), self.word_hidden_state)
+            output_list.append(output)
+        output = torch.cat(output_list, 0)
+        output, self.sent_hidden_state = self.sent_att_net(output, self.sent_hidden_state)
+
+        return output
+
+class HierarchicalAttentionEncoder(nn.Module):
+    def __init__(self, num_encoders, embed_dim, hidden_dim):
+        super().__init__()
+        self.num_encoders = num_encoders
+        self.embed_dim = embed_dim
+        self.hidden_dim = hidden_dim
+                
+        # Self-attention layers
+        self.temporal_attention = nn.MultiheadAttention(embed_dim, num_heads=8, batch_first=True)
+        self.encoder_attention = nn.MultiheadAttention(embed_dim, num_heads=8, batch_first=True)
+
+        # Temporal pooling layer
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        
+        # Fully connected layer
+        self.fc = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, embed_dim)
+        )
+        
+        
+    def forward(self, x):
+        # x shape: (batch_size, num_frames, num_frames * embed_dim)
+        batch_size = x.shape[0]
+        
+        # Apply temporal self-attention
+        attention_output1, _ = self.temporal_attention(x, x, x)
+        
+        # Apply encoder self-attention
+        attention_output2, _ = self.encoder_attention(attention_output1, attention_output1, attention_output1)
+        # shape (batch_size, num_frames, embed_dim)
+
+        # encode attention output to shape (batch_size, embed_dim)
+        attention_output2 = attention_output2.permute(0, 2, 1)
+        attention_output2 = self.pool(attention_output2)
+
+        attention_output2 = attention_output2.squeeze()
+        
+        # Pass through fully connected layer
+        output = self.fc(attention_output2)
+        
+        # shape (batch_size, embed_dim)
+        
+
+        return output
