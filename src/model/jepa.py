@@ -54,7 +54,7 @@ class JEPA(nn.Module):
         self.hsa_y = hsa_y
         self.predictor = predictor
         self.norm = nn.LayerNorm(embed_dim)
-        self.projection = LatentMLP(embed_dim, 2, 256)
+        self.projection = LatentMLP(embed_dim, 2, 1024)
 
     # frames: (b, num_frames=22, c, h, w)
     def forward(self, x, y, enc_xs, enc_ys):
@@ -77,30 +77,25 @@ class JEPA(nn.Module):
         # x_embed: (b, embed_dim)
         # y_embed: (b, embed_dim)
         x_embed = self.encoder_x(x)
-        y_embed = self.encoder_y(y)
-        # print("x_embed: ", x_embed.shape)
-        # print("y_embed: ", y_embed.shape)
-
-        enc_xs.append(x_embed)
-        enc_ys.append(y_embed)
-
-        concat_enc_xs = torch.stack(enc_xs, dim=1)
-        concat_enc_ys = torch.stack(enc_ys, dim=1)
-        # print("concat_enc_xs: ", concat_enc_xs.shape)
-        # print("concat_enc_ys: ", concat_enc_ys.shape)
-
-        # Pass through HSA_x and HSA_y -> (bs, embed_dim)
-        x_embed = self.hsa_x(concat_enc_xs)
-        y_embed = self.hsa_y(concat_enc_ys)
-        # print("x_embed: ", x_embed.shape)
-        # print("y_embed: ", y_embed.shape)
-
         x_embed = self.norm(x_embed)
-        y_embed = self.norm(y_embed)
+        enc_xs.append(x_embed)
+        concat_enc_xs = torch.stack(enc_xs, dim=1)
+        x_embed = self.hsa_x(concat_enc_xs)
+        x_embed = self.norm(x_embed)
 
+        with torch.no_grad():
+            y_embed = self.encoder_y(y)
+            y_embed = self.norm(y_embed)
+            enc_ys.append(y_embed)
+            concat_enc_ys = torch.stack(enc_ys, dim=1)
+            y_embed = self.hsa_y(concat_enc_ys)
+            y_embed = self.norm(y_embed)
+            
         z = self.projection(x_embed)
-        # L1 norm of z
-        latent_loss = torch.norm(z, p=1, dim=1).mean()
+        # L1 norm of z (b, embed_dim), want to minimize this
+        latent_loss = torch.linalg.vector_norm(z, ord=1, dim=1)
+
+        x_embed = x_embed + z
         
         # predictor
         # from first 11 frames, predict the frame that is self.skip frames away
@@ -109,9 +104,9 @@ class JEPA(nn.Module):
         # pred_y: (b, num_tokens, embed_dim)
         # squeeze + unqueeze because predictor expects (b, num_tokens, embed_dim) as transformer
         # avoid if predictor is FC
-        x_embed = x_embed.unsqueeze(1)
+        # x_embed = x_embed.unsqueeze(1)
         pred_y = self.predictor(x_embed)
-        pred_y = pred_y.squeeze(1)
+        # pred_y = pred_y.squeeze(1)
         # print('After Predictor: ', pred_y.shape)
 
         # calculate the residual
@@ -199,11 +194,6 @@ class JEPA_YEncoder(nn.Module):
             # print("y_embed: ", y_embed.shape)
 
             return y_embed
-
-
-
-
-
 
 class HJEPA(nn.Module):
     def __init__(self, img_size, patch_size, in_channels, embed_dim, num_heads, encoder_x, encoder_y, predictor, H=11):
