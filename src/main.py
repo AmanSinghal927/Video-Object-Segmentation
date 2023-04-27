@@ -12,6 +12,7 @@ from model.encoder import ViViT, HierarchicalAttentionEncoder, FeedForward, Tran
 from model.vae import VanillaVAE
 from torchvision import transforms
 from x_transformers import Decoder, Encoder
+from model.predictor import CNNPredictor
 import copy
 
 JEPAs = [{
@@ -208,8 +209,7 @@ def finetune_VAE(model, train_loader, val_loader, optimizer, criterion, schedule
                 if not os.path.exists(args.save_dir):
                     os.makedirs(args.save_dir)
                 torch.save(model.state_dict(), os.path.join(
-                    args.save
-                    _dir, f'finetune_VAE_{args.model}_best.pth'))
+                    args.save_dir, f'finetune_VAE_{args.model}_best.pth'))
 
     if args.save_model:
         if not os.path.exists(args.save_dir):
@@ -357,6 +357,11 @@ if __name__ == "__main__":
         nn.Dropout(0.1)
     )
 
+    predictor = CNNPredictor(
+        input_channels=4,
+        output_channels=1024
+    )
+
     # Load model
     # model = JEPA(img_size=(160, 240), patch_size=(8, 8), in_channels=3,
     #              embed_dim=512, 
@@ -469,7 +474,7 @@ if __name__ == "__main__":
         jepa_encoder = JEPA_XEncoder_Predictor(
             embed_dim=512,
             encoders_x=encoders_x,
-            predictor=JEPAs[-1]["model"].predictor
+            predictor=JEPAs[-1]["model"].predictor,
             hsa_x=JEPAs[-1]["model"].hsa_x,
         )
 
